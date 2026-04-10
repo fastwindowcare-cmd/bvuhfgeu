@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minecraft Ultimate Web Engine</title>
+    <style>
+        :root { --sky: #87CEEB; --night: #050510; }
+        body { margin: 0; background: #1a1a1a; font-family: 'Courier New', monospace; overflow: hidden; display: flex; flex-direction: column; align-items: center; color: white; }
+        
+        /* UI Panels */
+        #ui-top { width: 100%; background: #000; padding: 10px; display: flex; justify-content: space-around; align-items: center; border-bottom: 3px solid #444; z-index: 100; }
+        #game-viewport { position: relative; width: 950px; height: 550px; overflow: hidden; background: var(--sky); border: 6px solid #333; margin-top: 10px; transition: background 5s; }
+        #world { position: absolute; display: grid; grid-template-columns: repeat(150, 32px); grid-template-rows: repeat(50, 32px); transition: transform 0.1s; }
+        
+        /* Blocks */
+        .cell { width: 32px; height: 32px; box-sizing: border-box; position: relative; }
+        .grass { background: #4caf50; border-top: 4px solid #2e7d32; }
+        .snow { background: #fff; border-top: 4px solid #ddd; }
+        .sand { background: #f4d03f; border-top: 4px solid #d4ac0d; }
+        .dirt { background: #5d4037; }
+        .stone { background: #808080; }
+        .diamond { background: #808080; box-shadow: inset 8px 8px #00e5ff; }
+        .water { background: rgba(33, 150, 243, 0.7); }
+        .lava { background: #ff5722; box-shadow: inset 0 0 10px #ffeb3b; }
+        .tnt { background: #f44336; border: 2px dashed #fff; }
+        .torch { background: #ffa000; box-shadow: 0 0 20px #ffea00; border-radius: 50% 50% 0 0; transform: scale(0.6); }
+        .empty { background: transparent; }
+
+        /* Lighting & FX */
+        .dark { filter: brightness(0.15); transition: filter 0.5s; }
+        .lit { filter: brightness(1) !important; }
+        .boom { background: white !important; border-radius: 50%; transform: scale(2.5); z-index: 80; }
+
+        /* Entities */
+        .entity { position: absolute; width: 32px; height: 32px; z-index: 50; display: flex; align-items: center; justify-content: center; font-weight: bold; transition: 0.1s; }
+        #player { background: #3498db; border: 2px solid #fff; box-shadow: 0 0 15px #3498db; }
+        .creeper { background: #2ecc71; border: 2px solid #145a32; }
+        .villager { background: #d7ccc8; border: 2px solid #a1887f; color: #5d4037; }
+
+        /* HUD */
+        #minimap { position: absolute; top: 10px; right: 10px; width: 160px; height: 80px; background: rgba(0,0,0,0.8); border: 2px solid #fff; z-index: 200; }
+        #toolbar { background: #333; padding: 10px; display: flex; gap: 8px; width: 100%; justify-content: center; }
+        .slot { width: 55px; height: 55px; border: 3px solid #555; cursor: pointer; position: relative; background: #222; }
+        .slot.active { border-color: #fff; background: #444; }
+        .badge { position: absolute; bottom: 2px; right: 2px; background: #000; font-size: 10px; padding: 1px 3px; }
+        #hp-bar { width: 150px; height: 15px; background: #000; border: 2px solid #fff; position: relative; }
+        #hp-fill { height: 100%; background: #ff4d4d; width: 100%; transition: width 0.3s; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-top">
+        <div style="display:flex; align-items:center; gap:10px;">HP <div id="hp-bar"><div id="hp-fill"></div></div></div>
+        <div>TIME: <span id="clock" style="color:gold;">DAY</span></div>
+        <div>X:<span id="pos-x">0</span> Y:<span id="pos-y">0</span></div>
+        <button onclick="saveGame()">SAVE WORLD</button>
+        <button onclick="loadGame()">LOAD WORLD</button>
+    </div>
+
+    <div id="game-viewport">
+        <div id="minimap"><canvas id="m-canvas"></canvas></div>
+        <div id="world">
+            ME</div>
+        </div>
+    </div>
+
+    <div id="toolbar">
+        <div class="slot active" data-type="empty">MINE</div>
+        <div class="slot grass" data-type="grass"><div class="badge" id="b-grass">10</div></div>
+        <div class="slot stone" data-type="stone"><div class="badge" id="b-stone">0</div></div>
+        <div class="slot torch" data-type="torch"><div class="badge" id="b-torch">5</div></div>
+        <div class="slot tnt" data-type="tnt"><div class="badge" id="b-tnt">2</div></div>
+        <div class="slot water" data-type="water">WTR</div>
+        <div class="slot lava" data-type="lava">LAVA</div>
+    </div>
+
+    <script>
+        const world = document.getElementById('world');
+        const mCanvas = document.getElementById('m-canvas');
+        const mCtx = mCanvas.getContext('2d');
+        const COLS = 150, ROWS = 50;
+        
+        let playerPos = { x: 10, y: 12 };
+        let hp = 100, selected = 'empty', inv = { grass: 10, stone: 0, torch: 5, tnt: 2 };
+        let grid = [];
+        let mobs = [];
+
+        // 1. World Generation (Procedural Biomes)
+        function init() {
+            mCanvas.width = COLS; mCanvas.height = ROWS;
+            for(let y=0; y<ROWS; y++) {
+                grid[y] = [];
+                for(let x=0; x<COLS; x++) {
+                    const cell = document.createElement('div');
+                    cell.id = `c-${x}-${y}`;
+                    cell.className = 'cell empty';
+                    let ground = 15 + Math.floor(Math.sin(x * 0.15) * 4);
+                    
+                    if(y === ground) {
+                        if(x < 50) cell.className = 'cell grass';
+                        else if(x < 100) cell.className = 'cell snow';
+                        else cell.className = 'cell sand';
+                    } else if(y > ground + 15) {
+                        cell.className = Math.random() > 0.98 ? 'cell diamond' : 'cell stone';
+                    } else if(y > ground) {
+                        cell.className = 'cell dirt';
+                    }
+
+                    if(y > 25) cell.classList.add('dark');
+                    cell.onclick = () => handleInteract(x, y, cell);
+                    world.appendChild(cell);
+                    grid[y][x] = cell;
+                }
+            }
+            spawnMobs();
+            setInterval(tick, 400);
+            setInterval(cycleTime, 30000);
+            update();
+        }
+
+        // 2. Interaction & Inventory
+        function handleInteract(x, y, cell) {
+            let type = cell.className.split(' ').find(c => !['cell', 'dark', 'lit'].includes(c));
+            if(selected === 'empty') {
+                if(type && type !== 'empty') {
+                    inv[type] = (inv[type] || 0) + 1;
+                    cell.className = 'cell empty' + (y > 25 ? ' dark' : '');
+                }
+            } else if(inv[selected] > 0 && (!type || type === 'empty')) {
+                inv[selected]--;
+                cell.classList.add(selected);
+                if(selected === 'torch') illuminate(x, y);
+            }
+            update();
+        }
+
+        function illuminate(tx, ty) {
+            for(let y=ty-2; y<=ty+2; y++)
+                for(let x=tx-2; x<=tx+2; x++)
+                    if(grid[y] && grid[y][x]) grid[y][x].classList.add('lit');
+        }
+
+        // 3. Physics (Liquids, TNT, Gravity)
+        function tick() {
+            for(let y = ROWS - 2; y >= 0; y--) {
+                for(let x = 0; x < COLS; x++) {
+                    let cell = grid[y][x];
+                    let type = cell.className;
+                    if(type.includes('water') || type.includes('lava') || type.includes('tnt')) {
+                        let below = grid[y+1][x];
+                        if(below.className.includes('empty')) {
+                            below.className = type; cell.className = 'cell empty' + (y > 25 ? ' dark' : '');
+                        } else if((type.includes('water') || type.includes('lava')) && Math.random() > 0.5) {
+                            let side = grid[y][x + (Math.random() > 0.5 ? 1 : -1)];
+                            if(side && side.className.includes('empty')) side.className = type;
+                        }
+                        if(type.includes('tnt') && (below.className.includes('lava') || grid[y][x+1]?.className.includes('lava'))) {
+                            setTimeout(() => explode(x, y), 800);
+                        }
+                    }
+                }
+            }
+            mobs.forEach(m => {
+                if(Math.random() > 0.7) m.x += (m.x < playerPos.x ? 1 : -1);
+                if(Math.abs(m.x - playerPos.x) < 1.5 && Math.abs(m.y - playerPos.y) < 1.5) hp -= 5;
+            });
+            update();
+        }
+
+        function explode(x, y) {
+            for(let i=-2; i<=2; i++) {
+                for(let j=-2; j<=2; j++) {
+                    if(grid[y+i] && grid[y+i][x+j]) {
+                        grid[y+i][x+j].className = 'cell boom';
+                        setTimeout(() => grid[y+i][x+j].className = 'cell empty', 300);
+                    }
+                }
+            }
+        }
+
+        // 4. Systems (Time, Save, UI)
+        function cycleTime() {
+            const clock = document.getElementById('clock');
+            const isNight = clock.innerText === "DAY";
+            clock.innerText = isNight ? "NIGHT" : "DAY";
+            document.getElementById('game-viewport').style.background = isNight ? "var(--night)" : "var(--sky)";
+            if(isNight) spawnMobs();
+        }
+
+        function spawnMobs() {
+            let m = { x: playerPos.x + 15, y: 14, type: 'creeper', el: document.createElement('div') };
+            m.el.className = 'entity creeper'; m.el.innerText = 'ಠ_ಠ';
+            world.appendChild(m.el);
+            mobs.push(m);
+        }
+
+        function update() {
+            document.getElementById('player').style.transform = `translate(${playerPos.x * 32}px, ${playerPos.y * 32}px)`;
+            mobs.forEach(m => m.el.style.transform = `translate(${m.x * 32}px, ${m.y * 32}px)`);
+            
+            let offX = 475 - (playerPos.x * 32);
+            let offY = 275 - (playerPos.y * 32);
+            world.style.transform = `translate(${offX}px, ${offY}px)`;
+            
+            document.getElementById('hp-fill').style.width = hp + "%";
+            ['grass', 'stone', 'torch', 'tnt'].forEach(k => document.getElementById('b-'+k).innerText = inv[k] || 0);
+            drawMinimap();
+        }
+
+        function drawMinimap() {
+            mCtx.clearRect(0,0,COLS,ROWS);
+            for(let y=0; y<ROWS; y++) {
+                for(let x=0; x<COLS; x++) {
+                    let c = grid[y][x].className;
+                    if(c.includes('empty')) continue;
+                    mCtx.fillStyle = c.includes('grass') ? '#4caf50' : (c.includes('lava') ? '#f44336' : '#555');
+                    mCtx.fillRect(x, y, 1, 1);
+                }
+            }
+            mCtx.fillStyle = '#fff'; mCtx.fillRect(playerPos.x, playerPos.y, 2, 2);
+        }
+
+        window.onkeydown = (e) => {
+            const k = e.key.toLowerCase();
+            let oldY = playerPos.y;
+            if(k === 'a') playerPos.x--; if(k === 'd') playerPos.x++;
+            if(k === 'w') playerPos.y--; if(k === 's') playerPos.y++;
+            if(playerPos.y > oldY + 4) hp -= 20; // Fall Damage
+            update();
+        };
+
+        document.querySelectorAll('.slot').forEach(s => s.onclick = () => {
+            document.querySelectorAll('.slot').forEach(x => x.classList.remove('active'));
+            s.classList.add('active');
+            selected = s.dataset.type;
+        });
+
+        function saveGame() {
+            const data = { playerPos, inv, hp, world: grid.map(r => r.map(c => c.className)) };
+            localStorage.setItem('mc_ultra_save', JSON.stringify(data));
+            alert("Game Saved!");
+        }
+
+        function loadGame() {
+            const data = JSON.parse(localStorage.getItem('mc_ultra_save'));
+            if(!data) return;
+            playerPos = data.playerPos; inv = data.inv; hp = data.health || 100;
+            grid.forEach((r, y) => r.forEach((c, x) => c.className = data.world[y][x]));
+            update();
+        }
+
+        init();
+    </script>
+</body>
+</html>
